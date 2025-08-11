@@ -251,6 +251,4 @@ def get_event_trigs(ff, event):
     
     hits = dereference(event, events_trig_rref, ff['charge/ext_trigs/data']).flatten()
     
-
-    
     return hits
