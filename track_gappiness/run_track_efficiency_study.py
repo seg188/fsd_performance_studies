@@ -15,9 +15,12 @@ from data_format import data_store_nominal
 
 from geometry import load_geo
 
-geo = load_geo()
 
 warnings.filterwarnings("ignore")
+
+
+_version_tag='none'
+geo = {}
 
 ###############################################################################################
 
@@ -204,6 +207,44 @@ def get_all_hit_pixels_kinked(starts, finishs, io_group):
 
     return pyz, full_length*(counts / np.sum(counts))
 
+def get_closest_approach_to_track_kinked(y, z, starts, finishs):
+    '''
+    Get approach length and point of closest approach of the point (y, z) to the kinked track encoded by starts, finishes.
+    '''
+
+    # get closest apprach to each pair of start, end, and take minimum
+
+    lengths = []
+    closest_approaches = []
+            
+    for i in range(len(starts)):
+        start = starts[i][1:]
+        finish = finishs[i][1:]
+    
+        direction = finish - start    
+        length = np.linalg.norm(direction)
+        
+        direction = direction/length
+
+        _y, _z = y-start[0], z-start[1]
+        
+        pt_length = np.sqrt( _y**2 + _z**2 )
+        
+        dot = (_y*direction[0] + _z*direction[1]) / pt_length
+
+        theta = np.arccos(dot)
+
+        length_to_track = np.sin(theta) * pt_length
+        
+        pt_of_closest_approach = (start[0] + direction[0] * np.cos(theta) * pt_length, start[1] + direction[1] * np.cos(theta) * pt_length  )
+
+        lengths.append( length_to_track  )
+        closest_approaches.append( pt_of_closest_approach )
+
+    l_arg = np.argmin(lengths)
+    
+    return lengths[l_arg], closest_approaches[l_arg]
+
 def fit_line_3d(points):
     """
     Fits a straight line to an array of 3D points using PCA.
@@ -237,23 +278,32 @@ def fit_line_3d(points):
 
 def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True):
 
+    global _version_tag
+
     # initialize data dictionary
     data_store = {}
     for key in data_store_nominal.keys(): data_store[key] = []
 
     # open file data/references
     f = h5py.File(file)
+
+    hit_type_name=''
+    if _version_tag=='2x2':
+        hit_type_name='calib_final_hits'
+    elif _version_tag=='fsd':
+        hit_type_name='calib_prompt_hits' 
+
     events = f['charge/events/data']['id'][ f['charge/events/data']['nhit']>min_event_nhit]
-    events_hits_ref = f['charge/events/ref/charge/calib_final_hits/ref'][:]
-    events_hits_rref = f['charge/events/ref/charge/calib_final_hits/ref_region'][:]
-    hit_data = f['charge/calib_final_hits/data'][:]
+    events_hits_ref = f['charge/events/ref/charge/{}/ref'.format(hit_type_name)][:]
+    events_hits_rref = f['charge/events/ref/charge/{}/ref_region'.format(hit_type_name)][:]
+    hit_data = f['charge/{}/data'.format(hit_type_name)][:]
 
     events_trig_rref = np.array(f['charge/raw_events/ref/charge/ext_trigs/ref'][:])
     ext_trig_data = f['charge/ext_trigs/data'][:]
 
     #
 
-    if use_prompt:
+    if use_prompt and not (_version_tag=='fsd') :
         events_phits_ref = f['charge/events/ref/charge/calib_prompt_hits/ref'][:]
         events_phits_rref = f['charge/events/ref/charge/calib_prompt_hits/ref_region'][:]
         phit_data = f['charge/calib_prompt_hits/data'][:]
@@ -272,16 +322,30 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
         ev_hits = dereference.dereference(ev, events_hits_ref, hit_data, region=events_hits_rref).flatten()
         
         if exclude_disabled: ev_hits = ev_hits[ ~(ev_hits['is_disabled'][:])  ]
+       
+        if _version_tag=='2x2': 
+            #anode for 2x2
+            loop_group = range(1,9)
+        elif _version_tag=='fsd':
+            # anode for fsd
+            loop_group=range(1,3)
+        else:
+            raise RuntimeError('Detector version (2x2, fsd) not specified correctly!')
         
-        for io_group in range(1,9):
-            
+        for io_group in loop_group:
+        
             pixel_pitch = geo[io_group]['pixel_pitch']
             module = (io_group-1)//2
             anode = (io_group+1) % 2 + 1
             
             hits = ev_hits.copy()
             
-            mog = hits['io_group'].astype(int) == io_group
+            if _version_tag=='2x2':
+                mog = hits['io_group'].astype(int) == io_group
+            elif _version_tag=='fsd':
+                mog = ((hits['io_group'].astype(int)+1)//2) == io_group
+            
+
             #require at least 20 hits total in this io group
             #if all hits in a line, ~8cm of track
             if np.sum(mog)<20: continue
@@ -413,7 +477,7 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
 
                 if length < 12*pixel_pitch: continue
 
-                length=length-8*pixel_pitch
+                length=length-4*pixel_pitch
 
                 # now, get all hit pixels in forward direction
                 start=centr - direction/norm * length/2
@@ -498,10 +562,15 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
 
                 #SWAP IN PROMPT HITS if use_prompt!
                 ##################################
-                if use_prompt:
+                if use_prompt and not (_version_tag=='fsd'):
                     hits = dereference.dereference(ev, events_phits_ref, phit_data, region=events_phits_rref).flatten()
                     if exclude_disabled: hits = hits[ ~(hits['is_disabled'][:])  ]
-                    mog = hits['io_group'].astype(int)== io_group
+                    
+                    if _version_tag=='2x2':
+                        mog = hits['io_group'].astype(int) == io_group
+                    elif _version_tag=='fsd':
+                        mog = ((hits['io_group'].astype(int)+1)//2) == io_group
+
                     X = np.array([hits['x'][mog], hits['y'][mog], hits['z'][mog]]).transpose()
                     Q = np.array(hits['Q'][mog])
                     hit_io_group = np.array(hits['io_group'][:][mog])
@@ -532,8 +601,6 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
                     
                 ##################################
 
-                    
-
                 # find which pixels were MISSED
                 all_hit_pixel_ids = get_unique_pixel_ids_yz( X_filt[:,1:], io_group )
                 hit_pixel_ids, hit_idx, hit_counts = np.unique(all_hit_pixel_ids, return_index=True, return_counts=True )
@@ -550,7 +617,7 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
                 data_store['anode'] += [anode]*l.shape[0]
                 data_store['trigger_tag'] += [trig_tag]*l.shape[0]
 
-                N=len(get_unique_pixel_ids_yz( pyz, io_group ))
+                N=len(predicted_pixel_ids)
 
                 _total_charge_collected = [-1]*N
                 _hit_drift = [-1]*N
@@ -559,10 +626,16 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
                 _hit_io_chan = [-1]*N
                 _hit_chip_id = [-1]*N
                 _hit_chan_id = [-1]*N
-                
-                for ipid, pid in enumerate(list( get_unique_pixel_ids_yz( pyz, io_group ) )):
+                _approach_length = [-1]*N
+                _approach_pt_y = [-1]*N
+                _approach_pt_z = [-1]*N
+                _pix_approach_pt_y = [-1]*N
+                _pix_approach_pt_z = [-1]*N
+
+                for ipid, pid in enumerate(list( predicted_pixel_ids )):
                     if pid in hit_pixel_ids:
-                        indxs = np.where(all_hit_pixel_ids==pid)[0]
+                        hit_mask = all_hit_pixel_ids==pid
+                        indxs = np.where(hit_mask)[0]
                         _total_charge_collected[ipid] =  np.sum(Q_filt[indxs]) 
                         _hit_drift[ipid] = np.mean(X_filt[:,0][indxs]) 
                         _is_hit[ipid] = True
@@ -570,6 +643,18 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
                         _hit_io_chan[ipid] = hit_io_chan_filt[indxs[0]]
                         _hit_chip_id[ipid] = hit_chip_id_filt[indxs[0]]
                         _hit_chan_id[ipid] = hit_chan_id_filt[indxs[0]]
+                        approach_length, approach_pt = get_closest_approach_to_track_kinked( X_filt[:,1][indxs][0], X_filt[:,2][indxs][0],\
+                                                                                            starts, ends )
+
+                        _approach_length[ipid] = approach_length
+                        _approach_pt_y[ipid] = approach_pt[0]
+                        _approach_pt_z[ipid] = approach_pt[1]
+
+                        pix_y_approach_pt, pix_z_approach_pt = get_closest_pixel_yz(approach_pt[0], approach_pt[1], io_group)
+
+                        _pix_approach_pt_y[ipid] = pix_y_approach_pt
+                        _pix_approach_pt_z[ipid] = pix_z_approach_pt
+
 
                 data_store['total_charge_collected'] += _total_charge_collected
                 data_store['hit_drift'] += _hit_drift
@@ -578,30 +663,126 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
                 data_store['hit_io_chan'] += _hit_io_chan
                 data_store['hit_chip_id'] += _hit_chip_id
                 data_store['hit_chan_id'] += _hit_chan_id
+                data_store['approach_length'] += _approach_length
+                data_store['approach_pt_y'] += _approach_pt_y
+                data_store['approach_pt_z'] += _approach_pt_z
+                data_store['pix_approach_pt_y'] += _pix_approach_pt_y
+                data_store['pix_approach_pt_z'] += _pix_approach_pt_z
+
+                # Now, find hits that were ADJACENT to the track fit, and label them as such
+                # Also, calculate the point of closest approach of each hit to the track fit
+
+                remaining_pids = set(all_hit_pixel_ids) - set(predicted_pixel_ids)
+                N=len(remaining_pids)
+
+                _total_charge_collected = [-1]*N
+                _hit_drift = [-1]*N
+                _is_hit = [False]*N
+                _hit_io_group = [-1]*N
+                _hit_io_chan = [-1]*N
+                _hit_chip_id = [-1]*N
+                _hit_chan_id = [-1]*N
+                _pixel_y = [-1]*N
+                _pixel_z = [-1]*N
+                _approach_length = [-1]*N
+                _approach_pt_y = [-1]*N
+                _approach_pt_z = [-1]*N
+                _pix_approach_pt_y = [-1]*N
+                _pix_approach_pt_z = [-1]*N
+
+                
+                data_store['angle']+=[angle]*N
+                data_store['module']+=[module]*N
+                data_store['pixel_id'] += list(remaining_pids)
+                data_store['pixel_length'] += [-1.0]*N
+                data_store['anode'] += [anode]*N
+                data_store['trigger_tag'] += [trig_tag]*N
+                
+                for ipid, pid in enumerate(list( remaining_pids )):
+                    if pid in predicted_pixel_ids:
+                        continue
+                    else:
+                        hit_mask = all_hit_pixel_ids==pid
+                        indxs = np.where(hit_mask)[0]
+                        _total_charge_collected[ipid] =  np.sum(Q_filt[indxs]) 
+                        _hit_drift[ipid] = np.mean(X_filt[:,0][indxs]) 
+                        _is_hit[ipid] = True
+                        _hit_io_group[ipid] = hit_io_group_filt[indxs[0]] 
+                        _hit_io_chan[ipid] = hit_io_chan_filt[indxs[0]]
+                        _hit_chip_id[ipid] = hit_chip_id_filt[indxs[0]]
+                        _hit_chan_id[ipid] = hit_chan_id_filt[indxs[0]]
+                        _pixel_y[ipid] = X_filt[:,1][indxs][0]
+                        _pixel_z[ipid] = X_filt[:,2][indxs][0]
+
+                        approach_length, approach_pt = get_closest_approach_to_track_kinked( X_filt[:,1][indxs][0], X_filt[:,2][indxs][0],\
+                                                                                            starts, ends )
+
+                        _approach_length[ipid] = approach_length
+                        _approach_pt_y[ipid] = approach_pt[0]
+                        _approach_pt_z[ipid] = approach_pt[1]
+
+                        pix_y_approach_pt, pix_z_approach_pt = get_closest_pixel_yz(approach_pt[0], approach_pt[1], io_group)
+
+                        _pix_approach_pt_y[ipid] = pix_y_approach_pt
+                        _pix_approach_pt_z[ipid] = pix_z_approach_pt
+
+                        
+
+                        
+                data_store['total_charge_collected'] += _total_charge_collected
+                data_store['hit_drift'] += _hit_drift
+                data_store['is_hit'] += _is_hit
+                data_store['hit_io_group'] += _hit_io_group
+                data_store['hit_io_chan'] += _hit_io_chan
+                data_store['hit_chip_id'] += _hit_chip_id
+                data_store['hit_chan_id'] += _hit_chan_id
+                data_store['pixel_y'] += _pixel_y
+                data_store['pixel_z'] += _pixel_z
+                data_store['approach_length'] += _approach_length
+                data_store['approach_pt_y'] += _approach_pt_y
+                data_store['approach_pt_z'] += _approach_pt_z
+                data_store['pix_approach_pt_y'] += _pix_approach_pt_y
+                data_store['pix_approach_pt_z'] += _pix_approach_pt_z
+                        
                  
                 if not len(data_store['pixel_id'])==len(data_store['total_charge_collected']):
                     print('wot wot wot???')                                           
                     
     return data_store
 
-def main(data_dir, outf_name, use_prompt, max_files, specify_run=None):
+def main(data_dir, outf_name, use_prompt, max_files, version_tag, specify_run):
     
+    global _version_tag
+    _version_tag = version_tag
+
     create_h5_file_safe(outf_name)
 
     data_files = sorted(os.listdir(data_dir))
     close_all_h5_files()
 
     files_to_parse = len(data_files)
-    if max_files > 0:
-        files_to_parse = max_files
-    if True:
-        for ifile in tqdm(range(files_to_parse), desc='parsing files...'):
-            
-            # do main file processing
-            if not specify_run is None:
-                if not str(specify_run) in nominal_files[ifile]: continue
+    
+    ## load geometry
+    global geo
+    
+    if _version_tag=='2x2':
+        geo = load_geo('geo-2x2.json')
+    elif _version_tag=='fsd':
+        geo = load_geo('geo-fsd.json')
+    else:
+        raise RuntimeError('Detector version (2x2, fsd) not specified correctly!')
 
-            dstore = find_tracks(data_dir + data_files[ifile], use_prompt=use_prompt) 
+    files_to_loop = data_files
+    if not specify_run is None:
+        files_to_loop = [file for file in data_files if str(specify_run) in file]
+    
+    if max_files  > 0:
+        files_to_loop = files_to_loop[:max_files]
+
+    if True:
+        for file in tqdm(files_to_loop, desc='parsing files...'):
+            
+            dstore = find_tracks(data_dir + file, use_prompt=use_prompt) 
 
             # save data from dstore
             with h5py.File(outf_name, 'a') as hf:
@@ -617,8 +798,10 @@ def main(data_dir, outf_name, use_prompt, max_files, specify_run=None):
 if __name__ == '__main__':
         parser = argparse.ArgumentParser()
         parser.add_argument('--data_dir', '-i', default='./', type=str, help='''Directory containing ndlar_flow files to process''')
-        parser.add_argument('--outf_name', '-o', default='default_outf.h5', type=str, help='''Name/path for output to be written''')
         parser.add_argument('--use_prompt', action='store_true', help='''Use prompt hits to study efficiency''')
+        parser.add_argument('--outf_name', '-o', default='default_outf.h5', type=str, help='''Name/path for output to be written''')
+        parser.add_argument('--specify_run', '-r', default=None, type=str, help='''Run number to process, ignore others. Must be in file name''')
+        parser.add_argument('--version_tag', '-t', default='2x2', type=str, help='''Either 2x2 or fsd, determines which geometry and anode/module mapping to use''')
         parser.add_argument('--max_files', default=-1, type=int, help='''Max number of files to process''')
         args = parser.parse_args()
         main(**vars(args))

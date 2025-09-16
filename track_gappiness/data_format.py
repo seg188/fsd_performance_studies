@@ -36,7 +36,17 @@ data_store_nominal = {
         # charge sum of all hits on this channel associated with this track
         'total_charge_collected' : [],
         # tag for which io group received external trigger (or -1 for none)
-        'trigger_tag' : []
+        'trigger_tag' : [],
+        # distance of point to track fit
+        'approach_length' : [],
+        # pt of closest apprach (y) on track
+        'approach_pt_y' : [],
+        # pt of closest apprach (z) on track
+        'approach_pt_z' : [],
+        # pixel closest to pt of closest apprach (y) on track
+        'pix_approach_pt_y' : [],
+        # pixel closest to pt of closest apprach (z) on track
+        'pix_approach_pt_z' : [],
         }
 #
 
