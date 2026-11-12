@@ -115,34 +115,6 @@ def main(in_fname, out_fname, version_tag, use_adjacent_hits):
     
     for io_group in tqdm(loop_group):
         
-        # pixel y position
-        y_dqdx=[]
-
-        #pixel z position
-        z_dqdx=[]
-
-        #landau mu from fit (if fit is performed, else -1)
-        mu_dqdx=[]
-
-        #landau eta from fit (if fit is performed, else -1)
-        eta_dqdx=[]
-
-        # truncated mean of dq/dx
-        trim_mean_dqdx=[]
-
-        #truncated std of dqdx
-        trim_std_dqdx=[]
-
-        #module of channel
-        module_dqdx = []
-    
-        #anode of channel
-        anode_dqdx = []
-
-        #flag for if fit was performed and converged
-        # 1 - converged, 0 - not converged, -1 - not attempted
-        fit_flag_dqdx = []
-      
         pixel_pitch = geo[io_group]['pixel_pitch']
         pix_y, pix_z = geo[io_group]['pix_y_z']
 
@@ -158,7 +130,6 @@ def main(in_fname, out_fname, version_tag, use_adjacent_hits):
             module = 0
             anode = io_group
 
-        
         
         mp = (anodes  == anode)&\
              (modules== module)
@@ -192,6 +163,35 @@ def main(in_fname, out_fname, version_tag, use_adjacent_hits):
         print_count=0
         
         for ybin in tqdm(range(10, len(pix_y)-10), leave=False):
+            
+            # pixel y position
+            y_dqdx=[]
+    
+            #pixel z position
+            z_dqdx=[]
+    
+            #landau mu from fit (if fit is performed, else -1)
+            mu_dqdx=[]
+    
+            #landau eta from fit (if fit is performed, else -1)
+            eta_dqdx=[]
+    
+            # truncated mean of dq/dx
+            trim_mean_dqdx=[]
+    
+            #truncated std of dqdx
+            trim_std_dqdx=[]
+    
+            #module of channel
+            module_dqdx = []
+        
+            #anode of channel
+            anode_dqdx = []
+    
+            #flag for if fit was performed and converged
+            # 1 - converged, 0 - not converged, -1 - not attempted
+            fit_flag_dqdx = []
+        
             my = (np.absolute(_py - pix_y[ybin]) < pixel_pitch/3)
     
             _y_pz = _pz[my]
@@ -199,7 +199,7 @@ def main(in_fname, out_fname, version_tag, use_adjacent_hits):
             _y_lengths = (_lengths / np.sin(_angles))[my] 
             _y_event_ids = _event_ids[my]
             
-            for zbin in range(10,len(pix_z)-10):
+            for zbin in reversed(range(10,len(pix_z)-10)):
 
                 mz  = (np.absolute(_y_pz - pix_z[zbin]) < pixel_pitch/3)
 
@@ -272,25 +272,25 @@ def main(in_fname, out_fname, version_tag, use_adjacent_hits):
                 module_dqdx.append(module)
                 anode_dqdx.append(anode)
 
-        #save everything to the data file!
-        dstore={
-            'y' : y_dqdx,
-            'z' : z_dqdx,
-            'trim_mean' : trim_mean_dqdx,
-            'trim_std' : trim_std_dqdx,
-            'anode' : anode_dqdx,
-            'module': module_dqdx,
-            'mu_fit' : mu_dqdx,
-            'eta_fit' : eta_dqdx,
-            'fit_flag' : fit_flag_dqdx
-            }
-        
-        with h5py.File(out_fname, 'a') as hf:
-            for key in dstore.keys():
-                d=np.array(dstore[key])
-                orig_size = hf[key].shape[0]
-                hf[key].resize(( orig_size + d.shape[0]), axis = 0)
-                hf[key][-d.shape[0]:] = d
+            #save everything to the data file!
+            dstore={
+                'y' : y_dqdx,
+                'z' : z_dqdx,
+                'trim_mean' : trim_mean_dqdx,
+                'trim_std' : trim_std_dqdx,
+                'anode' : anode_dqdx,
+                'module': module_dqdx,
+                'mu_fit' : mu_dqdx,
+                'eta_fit' : eta_dqdx,
+                'fit_flag' : fit_flag_dqdx
+                }
+            
+            with h5py.File(out_fname, 'a') as hf:
+                for key in dstore.keys():
+                    d=np.array(dstore[key])
+                    orig_size = hf[key].shape[0]
+                    hf[key].resize(( orig_size + d.shape[0]), axis = 0)
+                    hf[key][-d.shape[0]:] = d
 
     print('Completed! Data saved to {}'.format(out_fname))
     return

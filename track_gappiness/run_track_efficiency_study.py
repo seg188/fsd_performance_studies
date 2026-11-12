@@ -12,6 +12,8 @@ import json
 import warnings
 from copy import deepcopy
 from data_format import data_store_nominal
+import fit_tracks
+from fit_tracks import fit_line_3d
 
 from geometry import load_geo
 
@@ -19,6 +21,7 @@ from geometry import load_geo
 warnings.filterwarnings("ignore")
 
 
+global_event_id = -1
 _version_tag='none'
 geo = {}
 
@@ -150,7 +153,7 @@ def get_all_hit_pixels(start, finish, io_group):
     return pyz, length*(counts / np.sum(counts))
 
 
-def get_all_hit_pixels_kinked(starts, finishs, io_group):
+def get_all_hit_pixels_kinked(starts, finishs, io_group, trans_diff=None):
     '''Get an array of all pixel (y,z) positions crossed by a track passing from pt. start-->finish.
 
         For this _kinked version, starts, finishs are lists of pts defining the segments of track
@@ -165,6 +168,11 @@ def get_all_hit_pixels_kinked(starts, finishs, io_group):
     pix_y, pix_z = geo[io_group]['pix_y_z']
     hit_y_z = np.array([])
     full_length=0
+
+    def get_trans_diff():
+        if trans_diff is None: return 0.0
+        else:
+            return np.random.normal(loc=0.0, scale=trans_diff)
     
     for i in range(len(starts)):
         start = starts[i][1:]
@@ -175,7 +183,7 @@ def get_all_hit_pixels_kinked(starts, finishs, io_group):
         
         direction = direction/length
     
-        n_pts_to_test_float = ( (length / pixel_pitch) * 10)
+        n_pts_to_test_float = ( (length / pixel_pitch) * 12)
 
         if np.isnan(n_pts_to_test_float): 
             return np.array([]), np.array([])
@@ -186,7 +194,7 @@ def get_all_hit_pixels_kinked(starts, finishs, io_group):
         # get pixels which are hit
         _hit_y_z = np.zeros( ( n_pts_to_test, 2 )  )
         for i in range(n_pts_to_test):
-            y, z = start[0] + line_pts[i]*direction[0], start[1] + line_pts[i]*direction[1] 
+            y, z = start[0] + line_pts[i]*direction[0] + get_trans_diff(), start[1] + line_pts[i]*direction[1] + get_trans_diff()
             _y, _z = get_closest_pixel_yz(y, z, io_group)
         
             _hit_y_z[i,0] =  _y
@@ -245,40 +253,49 @@ def get_closest_approach_to_track_kinked(y, z, starts, finishs):
     
     return lengths[l_arg], closest_approaches[l_arg]
 
-def fit_line_3d(points):
-    """
-    Fits a straight line to an array of 3D points using PCA.
+
+def get_closest_approach_to_track_kinked_3D(x, y, z, starts, finishs):
+    '''
+    Get approach length and point of closest approach of the point (y, z) to the kinked track encoded by starts, finishes.
+    '''
+
+    # get closest apprach to each pair of start, end, and take minimum
+
+    lengths = []
+    closest_approaches = []
+            
+    for i in range(len(starts)):
+        start = starts[i]
+        finish = finishs[i]
     
-    Parameters:
-        points (np.ndarray): An Nx3 array of 3D points.
+        direction = finish - start    
+        length = np.linalg.norm(direction)
+        
+        direction = direction/length
 
-    Returns:
-        point_on_line (np.ndarray): A point on the best-fit line (the centroid).
-        direction (np.ndarray): A unit direction vector of the best-fit line.
-    """
-    # Ensure input is a numpy array
-    points = np.asarray(points)
+        _x, _y, _z = x-start[0], y-start[1], z-start[2]
+        
+        pt_length = np.sqrt( _x**2 + _y**2 + _z**2 )
+        
+        dot = (_x*direction[0] + _y*direction[1] + _z*direction[2]) / pt_length
 
-    # Compute the centroid (a point on the best-fit line)
-    centroid = points.mean(axis=0)
+        theta = np.arccos(dot)
 
-    # Subtract the centroid to center the data
-    centered_points = points - centroid
+        length_to_track = np.sin(theta) * pt_length
+        
+        pt_of_closest_approach = (start[0] + direction[0] * np.cos(theta) * pt_length, start[1] + direction[1] * np.cos(theta) * pt_length, start[2] + direction[2] * np.cos(theta) * pt_length  )
 
-    # Compute the covariance matrix of centered points
-    cov_matrix = np.cov(centered_points, rowvar=False)
+        lengths.append( length_to_track  )
+        closest_approaches.append( pt_of_closest_approach )
 
-    # Compute eigenvalues and eigenvectors
-    eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+    l_arg = np.argmin(lengths)
+    
+    return lengths[l_arg], closest_approaches[l_arg]
 
-    # Get the eigenvector with the largest eigenvalue (direction of max variance)
-    direction = eigenvectors[:, np.argmax(eigenvalues)]
-
-    return centroid, direction
 
 def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True):
 
-    global _version_tag
+    global _version_tag, global_event_id
 
     # initialize data dictionary
     data_store = {}
@@ -289,7 +306,7 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
 
     hit_type_name=''
     if _version_tag=='2x2':
-        hit_type_name='calib_final_hits'
+        hit_type_name='calib_prompt_hits'
     elif _version_tag=='fsd':
         hit_type_name='calib_prompt_hits' 
 
@@ -300,8 +317,6 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
 
     events_trig_rref = np.array(f['charge/raw_events/ref/charge/ext_trigs/ref'][:])
     ext_trig_data = f['charge/ext_trigs/data'][:]
-
-    #
 
     if use_prompt and not (_version_tag=='fsd') :
         events_phits_ref = f['charge/events/ref/charge/calib_prompt_hits/ref'][:]
@@ -320,7 +335,7 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
             trig_tag=6
         
         ev_hits = dereference.dereference(ev, events_hits_ref, hit_data, region=events_hits_rref).flatten()
-        
+
         if exclude_disabled: ev_hits = ev_hits[ ~(ev_hits['is_disabled'][:])  ]
        
         if _version_tag=='2x2': 
@@ -333,6 +348,7 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
             raise RuntimeError('Detector version (2x2, fsd) not specified correctly!')
         
         for io_group in loop_group:
+            global_event_id += 1
         
             pixel_pitch = geo[io_group]['pixel_pitch']
             module = (io_group-1)//2
@@ -356,6 +372,7 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
             all_hit_io_chan = np.array(hits['io_channel'][:][mog])
             all_hit_chip_id = np.array(hits['chip_id'][:][mog])
             all_hit_chan_id = np.array(hits['channel_id'][:][mog])
+            #_backtrack = backtrack[mog]
 
             # Identify rows with NaN values
             rows_with_nan = np.isnan(_X).any(axis=1)
@@ -407,158 +424,21 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
                 hit_chip_id=all_hit_chip_id[m]
                 hit_chan_id=all_hit_chan_id[m]
 
-                #do PCA
-                pca=PCA(n_components=3)
-                pca.fit(X)
 
-                #make sure this subsection is track-like
-                if np.max(pca.explained_variance_ratio_) < 0.98: 
-                    continue
-                    
-                # fit subcluster to a line
-                c, ssubdir = fit_line_3d(X)
+                index_results, used_mask = fit_tracks.fit_tracks(X)
 
-                #get angular variance between section and original fit
-                cos_theta = np.dot(ssubdir, fdirection) / np.linalg.norm(ssubdir) / np.linalg.norm(fdirection)
+                if index_results is None: continue
 
-                # check that this cluster is aligned with original track direction
-                if np.absolute(cos_theta) < 0.98: 
-                    continue
+                if len(index_results.keys())==0: continue
 
+                filt_mask = used_mask > -999
 
-                # squared distance of all points from line
-                # get distance from each point to center
-                dist_from_cent = X - c
-                norm = np.sqrt(np.sum( dist_from_cent**2, axis=1 ))
-
-                #project onto direction of track
-                projection_on_direction = dist_from_cent[:,0]*ssubdir[0] \
-                                        + dist_from_cent[:,1]*ssubdir[1] \
-                                        + dist_from_cent[:,2]*ssubdir[2]
-
-                perp_component = dist_from_cent - np.array([ projection_on_direction * ssubdir[0], projection_on_direction * ssubdir[1], projection_on_direction * ssubdir[2] ]  ).transpose()
-                distance_perp = np.sqrt(np.sum(perp_component**2, axis=1))
-
-                # check that mean of best 90% of hits are within 1 pixel pitch from fit
-                if scipy.stats.trim_mean( distance_perp, 0.05 ) > pixel_pitch: continue
-
-
-                # remove hits that are more than 2 pixel pitchs from fit
-                filt_mask = distance_perp < pixel_pitch*2
-                
                 X_filt = X[filt_mask]
                 Q_filt = Q[filt_mask]
                 hit_io_group_filt = hit_io_group[filt_mask]
                 hit_io_chan_filt =  hit_io_chan[filt_mask]
                 hit_chip_id_filt = hit_chip_id[filt_mask]
                 hit_chan_id_filt = hit_chan_id[filt_mask]
-
-                #re-do the fit without the stragglers!
-                centr, direction = fit_line_3d(X_filt)
-
-                #get track angle to drift direction
-                angle = np.arccos( np.absolute(direction[0]) / np.linalg.norm(direction))
-
-                #get track angle in yz plane:
-                angle_yz = np.arctan(np.absolute(direction[2])/np.absolute(direction[1]))
-
-                #remove tracks that are exactly vertical or exactly horizontal, in case these are some funny artifacts
-                if (np.absolute(angle_yz) < 0.01) or (np.absolute(angle_yz - np.pi/2) < 0.01): continue
-
-                # get predicted pixels which should have hits
-                norm = np.sqrt(direction[1]**2 + direction[2]**2)
-                
-                #get distance along track from center ignoring drift direction
-                projection_on_direction = dist_from_cent[:,1]*direction[1]/norm \
-                                    + dist_from_cent[:,2]*direction[2]/norm \
-
-                # length in pixel plane only
-                length = np.max(projection_on_direction) - np.min(projection_on_direction) 
-
-                if length < 12*pixel_pitch: continue
-
-                length=length-4*pixel_pitch
-
-                # now, get all hit pixels in forward direction
-                start=centr - direction/norm * length/2
-                end = centr + direction/norm * length/2
-
-                # improve pixel-hit predictions by allowing for kinks in the track
-                # check for a peak in the fit residual distribution
-
-                starts = [start]
-                ends   = [end]
-
-                kink_depth=2
-
-                def add_kinks(start, end, pts, qs):
-
-                    c = (start+end)/2
-                    direction = (end-start)/np.linalg.norm(end-start)
-
-                    #recalculate perpendicular distances
-                    dist_from_cent = pts - c
-                    norm = np.sqrt(np.sum( dist_from_cent**2, axis=1 ))
-
-                    #project onto direction of track
-                    projection_on_direction = dist_from_cent[:,0]*direction[0] \
-                                            + dist_from_cent[:,1]*direction[1] \
-                                            + dist_from_cent[:,2]*direction[2]
-
-                    perp_component = dist_from_cent - np.array([ projection_on_direction * direction[0], projection_on_direction * direction[1], projection_on_direction * direction[2] ]  ).transpose()
-                    distance_perp = np.sqrt(np.sum(perp_component**2, axis=1))
-
-                    # get pt with max perpendicular distance, find charge centroid within sqrt(2) pixel pitch sphere of that pt
-                    max_pt_indx = np.argmax(distance_perp)
-                    max_pt_xyz = pts[max_pt_indx, :]
-
-                    close_pts_mask = np.sum((pts - max_pt_xyz)**2, axis=0) < np.sqrt(2)*pixel_pitch
-
-                    centroid =  np.array([np.sum(pts[:,0]*qs), np.sum(pts[:,1]*qs), np.sum(pts[:,2]*qs)]) / np.sum(qs)
-
-                    return centroid
-                    
-        
-                ##################################################################
-                
-                for ikink in range(kink_depth):
-
-                    new_starts = deepcopy(starts)
-                    new_ends   = deepcopy(ends)
-
-                    add_pts = 0
-
-                    for i in range(len(starts)):
-
-                        start = starts[i]
-                        end = ends[i]
-
-                        pts_mask = ( X_filt[:,1] > start[1]-pixel_pitch ) & ( X_filt[:,2] > start[2]-pixel_pitch ) & ( X_filt[:,1] < end[1]+pixel_pitch ) & ( X_filt[:,2] < end[2]-pixel_pitch ) 
-
-                        if np.sum(pts_mask)<20: continue
-                            
-                        new_pt = add_kinks( start, end, X_filt[pts_mask, :], Q_filt[pts_mask] )
-
-                        if (np.linalg.norm( start - new_pt ) > 2*pixel_pitch) and (np.linalg.norm( end - new_pt ) > 2*pixel_pitch):
-                            new_starts.insert(i+1+add_pts, new_pt)
-                            new_ends.insert(i+add_pts, new_pt)
-                            add_pts+=1
-
-                    starts = new_starts
-                    ends = new_ends
-
-                # get all pts which would be hit by these track segments
-                pyz, l = get_all_hit_pixels_kinked( starts, ends, io_group)
-
-                if l.shape[0]==0:
-                    continue
-
-                ###############################################
-
-                
-
-                # at this point, we have a prediction for pixels which should have been hit by this track.
-                # Now, if using prompt hits is desired, we can swap these in!
 
                 #SWAP IN PROMPT HITS if use_prompt!
                 ##################################
@@ -579,16 +459,18 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
                     hit_chan_id = np.array(hits['channel_id'][:][mog])
 
                     # now filter out hits that are too far from this track (>1 pixel pitch)
-            
-                    #get distance of hits to the line between start, end
-                    track_dir = (direction)/np.linalg.norm(direction)
-                    p=(X-centr)
-                    dp=( p[:, 0]*track_dir[0] +  p[:, 1]*track_dir[1] +  p[:, 2]*track_dir[2]  )
-                    
-                    approach_to_track = p - np.array([dp*track_dir[0], dp*track_dir[1], dp*track_dir[2]]).transpose()
+                    dist_to_track = np.ones( Q.shape  )*9999999.
 
-                    dist_to_track = np.linalg.norm(approach_to_track, axis=1)
-                    #print(dist_to_track.shape, p.shape)
+                    all_starts, all_ends= [], []
+                    for index in index_results.keys():
+                        start, end = index_results[index]['start'], index_results[index]['end']
+                        all_starts.append(start)
+                        all_ends.append(end)
+
+                    for i in range(Q.shape[0]):
+                        x, y, z = X[i, 0], X[i, 1], X[i, 2]
+                        ll, pp = get_closest_approach_to_track_kinked_3D(x, y, z, all_starts, all_ends)
+                        dist_to_track[i] = ll
                     
                     filt_mask = dist_to_track < 2*pixel_pitch
 
@@ -601,6 +483,28 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
                     
                 ##################################
 
+                
+                pyz, l = None, np.array([])
+                angles = []
+
+                for index in index_results.keys():
+                    start, end = index_results[index]['start'], index_results[index]['end']
+                    ###
+                    _pyz, _l = get_all_hit_pixels_kinked( [start], [end], io_group)
+
+                    ##
+
+                    if pyz is None:
+                        pyz = _pyz
+                    else:
+                        pyz = np.concatenate( ( pyz, _pyz )  )
+                    l = np.concatenate( (l, _l)  )
+
+                    angles += [index_results[index]['angle']]*_pyz.shape[0]
+                    
+                if pyz is None: continue
+                if pyz.shape[0]<1: continue    
+
                 # find which pixels were MISSED
                 all_hit_pixel_ids = get_unique_pixel_ids_yz( X_filt[:,1:], io_group )
                 hit_pixel_ids, hit_idx, hit_counts = np.unique(all_hit_pixel_ids, return_index=True, return_counts=True )
@@ -608,16 +512,9 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
                 predicted_pixel_ids = get_unique_pixel_ids_yz(  pyz, io_group  )
                 #Now, save summary information, as well as pixel-by-pixel information
 
-                data_store['angle']+=[angle]*l.shape[0]
-                data_store['module']+=[module]*l.shape[0]
-                data_store['pixel_id'] += list(get_unique_pixel_ids_yz( pyz, io_group ))
-                data_store['pixel_y'] += list( pyz[:,0] )
-                data_store['pixel_z'] += list( pyz[:,1] )
-                data_store['pixel_length'] += list(l)
-                data_store['anode'] += [anode]*l.shape[0]
-                data_store['trigger_tag'] += [trig_tag]*l.shape[0]
-
-                N=len(predicted_pixel_ids)
+                all_predicted_and_hit = set( list(predicted_pixel_ids) + list(all_hit_pixel_ids))
+                
+                N=len(all_predicted_and_hit)
 
                 _total_charge_collected = [-1]*N
                 _hit_drift = [-1]*N
@@ -631,20 +528,53 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
                 _approach_pt_z = [-1]*N
                 _pix_approach_pt_y = [-1]*N
                 _pix_approach_pt_z = [-1]*N
+                _n_hits = [-1]*N
+                _true_q = [-1]*N
+                _true_length = [-1]*N
+                
+                _pixel_id = [-1]*N
+                _pixel_y = [np.nan]*N
+                _pixel_z = [np.nan]*N
+                _pixel_length = [np.nan]*N
+                
+                for ipid, pid in enumerate(list( all_predicted_and_hit )):
 
-                for ipid, pid in enumerate(list( predicted_pixel_ids )):
+                    ind = -1
+                    if pid in predicted_pixel_ids:
+                        ind = list(predicted_pixel_ids).index(pid)
+                        _y = pyz[ind, 0]
+                        _z = pyz[ind, 1]
+                        pl = l[ind]
+                    else:
+                        ind = list(all_hit_pixel_ids).index(pid)
+                        _y = X_filt[ind, 1]
+                        _z = X_filt[ind, 2]
+                        pl = 0
+
+                    _pixel_id[ipid] = pid      
+                    _pixel_length[ipid] = pl
+                    _pixel_y[ipid] = _y
+                    _pixel_z[ipid] = _z
+                    
                     if pid in hit_pixel_ids:
                         hit_mask = all_hit_pixel_ids==pid
+                        fit_index = used_mask[hit_mask][0]
+                            
                         indxs = np.where(hit_mask)[0]
                         _total_charge_collected[ipid] =  np.sum(Q_filt[indxs]) 
+                        _n_hits[ipid] = indxs.shape[0]
                         _hit_drift[ipid] = np.mean(X_filt[:,0][indxs]) 
                         _is_hit[ipid] = True
                         _hit_io_group[ipid] = hit_io_group_filt[indxs[0]] 
                         _hit_io_chan[ipid] = hit_io_chan_filt[indxs[0]]
                         _hit_chip_id[ipid] = hit_chip_id_filt[indxs[0]]
                         _hit_chan_id[ipid] = hit_chan_id_filt[indxs[0]]
+
+                        if not fit_index in index_results.keys():
+                            continue
+                            
                         approach_length, approach_pt = get_closest_approach_to_track_kinked( X_filt[:,1][indxs][0], X_filt[:,2][indxs][0],\
-                                                                                            starts, ends )
+                                                         [ index_results[fit_index]['start'] ], [ index_results[fit_index]['end'] ] )
 
                         _approach_length[ipid] = approach_length
                         _approach_pt_y[ipid] = approach_pt[0]
@@ -654,7 +584,7 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
 
                         _pix_approach_pt_y[ipid] = pix_y_approach_pt
                         _pix_approach_pt_z[ipid] = pix_z_approach_pt
-
+                        
 
                 data_store['total_charge_collected'] += _total_charge_collected
                 data_store['hit_drift'] += _hit_drift
@@ -668,82 +598,19 @@ def find_tracks(file, min_event_nhit=40, use_prompt=False, exclude_disabled=True
                 data_store['approach_pt_z'] += _approach_pt_z
                 data_store['pix_approach_pt_y'] += _pix_approach_pt_y
                 data_store['pix_approach_pt_z'] += _pix_approach_pt_z
-
-                # Now, find hits that were ADJACENT to the track fit, and label them as such
-                # Also, calculate the point of closest approach of each hit to the track fit
-
-                remaining_pids = set(all_hit_pixel_ids) - set(predicted_pixel_ids)
-                N=len(remaining_pids)
-
-                _total_charge_collected = [-1]*N
-                _hit_drift = [-1]*N
-                _is_hit = [False]*N
-                _hit_io_group = [-1]*N
-                _hit_io_chan = [-1]*N
-                _hit_chip_id = [-1]*N
-                _hit_chan_id = [-1]*N
-                _pixel_y = [-1]*N
-                _pixel_z = [-1]*N
-                _approach_length = [-1]*N
-                _approach_pt_y = [-1]*N
-                _approach_pt_z = [-1]*N
-                _pix_approach_pt_y = [-1]*N
-                _pix_approach_pt_z = [-1]*N
-
-                
-                data_store['angle']+=[angle]*N
+                data_store['true_q'] += _true_q
+                data_store['n_hits'] += _n_hits
+                data_store['true_length'] += _true_length
                 data_store['module']+=[module]*N
-                data_store['pixel_id'] += list(remaining_pids)
-                data_store['pixel_length'] += [-1.0]*N
                 data_store['anode'] += [anode]*N
+                data_store['angle'] += [np.mean(angles)]*N
                 data_store['trigger_tag'] += [trig_tag]*N
-                
-                for ipid, pid in enumerate(list( remaining_pids )):
-                    if pid in predicted_pixel_ids:
-                        continue
-                    else:
-                        hit_mask = all_hit_pixel_ids==pid
-                        indxs = np.where(hit_mask)[0]
-                        _total_charge_collected[ipid] =  np.sum(Q_filt[indxs]) 
-                        _hit_drift[ipid] = np.mean(X_filt[:,0][indxs]) 
-                        _is_hit[ipid] = True
-                        _hit_io_group[ipid] = hit_io_group_filt[indxs[0]] 
-                        _hit_io_chan[ipid] = hit_io_chan_filt[indxs[0]]
-                        _hit_chip_id[ipid] = hit_chip_id_filt[indxs[0]]
-                        _hit_chan_id[ipid] = hit_chan_id_filt[indxs[0]]
-                        _pixel_y[ipid] = X_filt[:,1][indxs][0]
-                        _pixel_z[ipid] = X_filt[:,2][indxs][0]
+                data_store['unique_track_id'] += [global_event_id]*N
 
-                        approach_length, approach_pt = get_closest_approach_to_track_kinked( X_filt[:,1][indxs][0], X_filt[:,2][indxs][0],\
-                                                                                            starts, ends )
-
-                        _approach_length[ipid] = approach_length
-                        _approach_pt_y[ipid] = approach_pt[0]
-                        _approach_pt_z[ipid] = approach_pt[1]
-
-                        pix_y_approach_pt, pix_z_approach_pt = get_closest_pixel_yz(approach_pt[0], approach_pt[1], io_group)
-
-                        _pix_approach_pt_y[ipid] = pix_y_approach_pt
-                        _pix_approach_pt_z[ipid] = pix_z_approach_pt
-
-                        
-
-                        
-                data_store['total_charge_collected'] += _total_charge_collected
-                data_store['hit_drift'] += _hit_drift
-                data_store['is_hit'] += _is_hit
-                data_store['hit_io_group'] += _hit_io_group
-                data_store['hit_io_chan'] += _hit_io_chan
-                data_store['hit_chip_id'] += _hit_chip_id
-                data_store['hit_chan_id'] += _hit_chan_id
+                data_store['pixel_id'] += _pixel_id
                 data_store['pixel_y'] += _pixel_y
                 data_store['pixel_z'] += _pixel_z
-                data_store['approach_length'] += _approach_length
-                data_store['approach_pt_y'] += _approach_pt_y
-                data_store['approach_pt_z'] += _approach_pt_z
-                data_store['pix_approach_pt_y'] += _pix_approach_pt_y
-                data_store['pix_approach_pt_z'] += _pix_approach_pt_z
-                        
+                data_store['pixel_length'] += _pixel_length
                  
                 if not len(data_store['pixel_id'])==len(data_store['total_charge_collected']):
                     print('wot wot wot???')                                           
@@ -758,6 +625,7 @@ def main(data_dir, outf_name, use_prompt, max_files, version_tag, specify_run):
     create_h5_file_safe(outf_name)
 
     data_files = sorted(os.listdir(data_dir))
+    data_files = [f for f in data_files if not 'json' in f]
     close_all_h5_files()
 
     files_to_parse = len(data_files)
@@ -777,7 +645,7 @@ def main(data_dir, outf_name, use_prompt, max_files, version_tag, specify_run):
         files_to_loop = [file for file in data_files if str(specify_run) in file]
     
     if max_files  > 0:
-        files_to_loop = files_to_loop[:max_files]
+        files_to_loop = files_to_loop[max_files:]
 
     if True:
         for file in tqdm(files_to_loop, desc='parsing files...'):

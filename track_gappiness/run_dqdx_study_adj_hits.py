@@ -53,7 +53,7 @@ def main(in_fname, out_fname, version_tag, use_adjacent_hits):
     except:
         raise RuntimeError('Invalid version tag! {}'.format(version_tag))
     # create output file
-    create_h5_file_safe(out_fname, ['y', 'z', 'trim_mean', 'trim_std', 'module', 'anode', 'mu_fit', 'eta_fit', 'fit_flag'])
+    create_h5_file_safe(out_fname, ['y', 'z', 'module', 'anode', 'crossing_length', 'dQ_values', 'track_angle', 'id_values'])
 
     print('==> Created output file:\t{:0.4f}s'.format(time.time()-start))
     # Load data file 
@@ -121,28 +121,25 @@ def main(in_fname, out_fname, version_tag, use_adjacent_hits):
         #pixel z position
         z_dqdx=[]
 
-        #landau mu from fit (if fit is performed, else -1)
-        mu_dqdx=[]
-
-        #landau eta from fit (if fit is performed, else -1)
-        eta_dqdx=[]
-
-        # truncated mean of dq/dx
-        trim_mean_dqdx=[]
-
-        #truncated std of dqdx
-        trim_std_dqdx=[]
-
         #module of channel
         module_dqdx = []
     
         #anode of channel
         anode_dqdx = []
 
-        #flag for if fit was performed and converged
-        # 1 - converged, 0 - not converged, -1 - not attempted
-        fit_flag_dqdx = []
+        #track angle making hits
+        track_angle = []
+
+        #crossing length of segment
+        crossing_length = []
       
+        #dQ value
+        dQ_values = []
+
+        #unique identifier for each track
+        id_values = []
+
+
         pixel_pitch = geo[io_group]['pixel_pitch']
         pix_y, pix_z = geo[io_group]['pix_y_z']
 
@@ -197,18 +194,17 @@ def main(in_fname, out_fname, version_tag, use_adjacent_hits):
             _y_pz = _pz[my]
             _y_dQs = _dQs[my]
             _y_lengths = (_lengths / np.sin(_angles))[my] 
+            _y_angles = _angles[my]
             _y_event_ids = _event_ids[my]
             
             for zbin in range(10,len(pix_z)-10):
 
                 mz  = (np.absolute(_y_pz - pix_z[zbin]) < pixel_pitch/3)
-
-                if np.sum(mz) < 3: 
-                    print('fewer than 3 hits! continuing')
-                    continue
+                if np.sum(mz)<1: continue
 
                 _z_lengths = _y_lengths[mz]
 
+                _z_angles = _y_angles[mz]
                 _z_Q = _y_dQs[mz]
                 _z_event_ids = _y_event_ids[mz]
 
@@ -216,12 +212,15 @@ def main(in_fname, out_fname, version_tag, use_adjacent_hits):
                 
                 dQ=[]
                 dx=[]
+                ang=[]
+                ids=[]
 
                 if any(counts > 1):
                     for ev in evs:
                         mm = _z_event_ids==ev
 
                         l = np.max(_z_lengths[mm])
+                        thisangle = _z_angles[0]
 
                         if l < 0:
                             #print('no positive lengths!')
@@ -230,59 +229,43 @@ def main(in_fname, out_fname, version_tag, use_adjacent_hits):
 
                         dQ.append( np.sum(_z_Q[mm]) )
                         dx.append(l)
+                        ang.append(thisangle)
+                        ids.append(ev)
 
                     dQ=np.array(dQ)
                     dx=np.array(dx)
-
+                    ang=np.array(ang)
+                    ids=np.array(ids)
                 else:
 
                     mm = _z_lengths > 0
                     dQ = _z_Q[ mm ]
                     dx = _z_lengths[ mm ]
+                    ang = _z_angles[ mm ]
+                    ids = _z_event_ids[mm]
+                #dQdx = dQ/dx
+    
+                for idq, dq in enumerate(dQ):
+                    y_dqdx.append(pix_y[ybin])
+                    z_dqdx.append(pix_z[zbin])
+                    module_dqdx.append(module)
+                    anode_dqdx.append(anode)
+                    dQ_values.append(dq)
+                    id_values.append(ids[idq])
+                    track_angle.append(ang[idq])
+                    crossing_length.append(dx[idq])
 
-                
-                dQdx = dQ/dx
-
-                params=None
-                
-                if np.sum(mz) > 40:
-                    try:
-                        vals, bins = np.histogram(dQdx, bins=25, range=(0,100))
-                        params, pcov = curve_fit(landau, (bins[1:]+bins[:-1])/2, vals, p0=[40, 10, 5], bounds=(0,100) )
-                        fit_flag_dqdx.append(1)
-                    except:
-                        params=None
-                        fit_flag_dqdx.append(0)
-    
-                else:
-                    fit_flag_dqdx.append(-1)
-                    
-    
-                if params is None:
-                    mu_dqdx.append( np.nan )
-                    eta_dqdx.append( np.nan  )
-                else:
-                    mu_dqdx.append( params[0] )
-                    eta_dqdx.append( params[1]  )
-    
-                y_dqdx.append(pix_y[ybin])
-                z_dqdx.append(pix_z[zbin])
-                trim_mean_dqdx.append( scipy.stats.trim_mean( dQdx,  0.3) )
-                trim_std_dqdx.append( trim_std( dQdx,  0.3) )
-                module_dqdx.append(module)
-                anode_dqdx.append(anode)
 
         #save everything to the data file!
         dstore={
             'y' : y_dqdx,
             'z' : z_dqdx,
-            'trim_mean' : trim_mean_dqdx,
-            'trim_std' : trim_std_dqdx,
             'anode' : anode_dqdx,
             'module': module_dqdx,
-            'mu_fit' : mu_dqdx,
-            'eta_fit' : eta_dqdx,
-            'fit_flag' : fit_flag_dqdx
+            'dQ_values' : dQ_values,
+            'crossing_length' : crossing_length,
+            'track_angle' : track_angle,
+            'id_values' : id_values
             }
         
         with h5py.File(out_fname, 'a') as hf:

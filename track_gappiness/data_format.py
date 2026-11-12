@@ -47,6 +47,12 @@ data_store_nominal = {
         'pix_approach_pt_y' : [],
         # pixel closest to pt of closest apprach (z) on track
         'pix_approach_pt_z' : [],
+        # true Q when using diagnostic version
+        'true_q' : [],
+        # true crossing length when using diagnostic version
+        'true_length' : [],
+        # number of hits on a single channel
+        'n_hits' : []
         }
 #
 
